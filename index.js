@@ -132,7 +132,7 @@ for (const file of service.getProgram().getSourceFiles()) {
         if (!value) {
             const start = file.getLineAndCharacterOfPosition(target.getStart());
             const lines = 1 + (file.getLineAndCharacterOfPosition(target.parent.getEnd()).line - file.getLineAndCharacterOfPosition(target.parent.getStart()).line);
-            console.log(`${file.fileName} -> ${target.getText()}:${1 + start.line},${1 + start.character}, potentially safe ~${lines} lines`);
+            console.log(`${file.fileName} -> ${target.getText()}:${1 + start.line},${1 + start.character}, potentially save ~${lines} lines`);
             fileLines += lines;
         }
     }

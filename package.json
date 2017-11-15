@@ -2,7 +2,10 @@
   "name": "ts-unused-exports",
   "version": "1.0.0",
   "description": "",
-  "author": "",
+  "author": "jrieken",
+  "license": "MIT",
+  "main": "index.js",
+  "scripts": {},
   "dependencies": {
     "typescript": "2.6.1",
     "@types/node": "8.0.51"
