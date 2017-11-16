@@ -7,7 +7,8 @@
   "main": "index.js",
   "scripts": {},
   "dependencies": {
-    "typescript": "2.6.1",
-    "@types/node": "8.0.51"
+    "@types/node": "8.0.51",
+    "minimatch": "^3.0.4",
+    "typescript": "2.6.1"
   }
 }

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const ts = require("typescript");
 const path_1 = require("path");
+const match = require("minimatch");
 const host = new class {
     constructor() {
         const args = process.argv.slice(2);
@@ -62,21 +63,17 @@ function isReferenced(service, node) {
         return false;
     }
     for (const refs of refsPerDef) {
-        if (refs.references.length > 1) {
-            return true;
+        for (const reference of refs.references) {
+            if (!reference.isDefinition && !match(reference.fileName, '{**/test/**,**.test.ts}')) {
+                // true reference, not itself, not inside a test
+                return true;
+            }
         }
     }
     return false;
 }
 function acceptFile(file) {
-    if (file.fileName.endsWith('.d.ts') // no .d.ts-files
-        || file.fileName.endsWith('.test.ts') // no .test.ts-files
-        || file.fileName.includes('/test/') // no files in /test/
-        || file.fileName.endsWith('/extHost.api.impl.ts') // api implementation
-    ) {
-        return false;
-    }
-    return true;
+    return !match(file.fileName, '{**/test/**,**.test.ts,**/*.d.ts,**/extHost*.ts,**/mainThread*.ts}');
 }
 function acceptName(node) {
     const text = node.getText();
@@ -117,7 +114,24 @@ function collectTargets(node, bucket) {
         collectTargets(child, bucket);
     });
 }
+class UnusedSymbolRecord {
+    constructor(fileName, symbolName, start, end, span = 1 + end.line - start.line) {
+        this.fileName = fileName;
+        this.symbolName = symbolName;
+        this.start = start;
+        this.end = end;
+        this.span = span;
+        //
+    }
+    static compareBySpan(a, b) {
+        return a.span - b.span;
+    }
+    toString() {
+        return `${this.fileName} -> ${this.symbolName}:${1 + this.start.line},${1 + this.start.character}, potentially save ~${this.span} lines`;
+    }
+}
 const service = ts.createLanguageService(host);
+const unused = [];
 let totalLines = 0;
 let fileCounter = 0;
 for (const file of service.getProgram().getSourceFiles()) {
@@ -128,16 +142,18 @@ for (const file of service.getProgram().getSourceFiles()) {
     let targets = new Set();
     collectTargets(file, targets);
     for (const target of targets) {
-        const value = isReferenced(service, target);
-        if (!value) {
-            const start = file.getLineAndCharacterOfPosition(target.getStart());
-            const lines = 1 + (file.getLineAndCharacterOfPosition(target.parent.getEnd()).line - file.getLineAndCharacterOfPosition(target.parent.getStart()).line);
-            console.log(`${file.fileName} -> ${target.getText()}:${1 + start.line},${1 + start.character}, potentially save ~${lines} lines`);
-            fileLines += lines;
+        if (!isReferenced(service, target)) {
+            const start = file.getLineAndCharacterOfPosition(target.parent.getStart());
+            const end = file.getLineAndCharacterOfPosition(target.parent.getEnd());
+            const record = new UnusedSymbolRecord(file.fileName, target.getText(), start, end);
+            unused.push(record);
+            console.error(record.toString());
+            fileLines += record.span;
         }
     }
     fileCounter += 1;
     totalLines += fileLines;
     console.error(`${file.fileName}, ${fileCounter}, ${totalLines} (+${fileLines})`);
 }
-console.log(`DONE with ${fileCounter} source files. Potential for saving ${totalLines} lines of unused code`);
+console.log(`DONE with ${fileCounter} source files. Found ${unused.length} unused symbols with potential for saving ${totalLines} lines of unused code`);
+console.log(unused.sort(UnusedSymbolRecord.compareBySpan).reverse().join('\n'));
