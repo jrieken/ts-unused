@@ -3,6 +3,59 @@ import * as ts from 'typescript';
 import { dirname } from 'path';
 import * as match from 'minimatch';
 
+function createMatcher(raw: string): NodeFilter {
+    // format `<pathPattern>|<namePattern>:<lineNumber>`
+    let pipe = raw.lastIndexOf('|');
+    let colon = raw.lastIndexOf(':');
+
+    if (pipe < 0) {
+        return node => {
+            // filename matching only
+            return match(node.getSourceFile().fileName, raw);
+        };
+    } else {
+        let pathPattern = raw.substring(0, pipe);
+        let namePattern = raw.substring(pipe + 1);
+        let lineNumber = Number(raw.substring(colon + 1)) || undefined;
+
+        return node => {
+            const source = node.getSourceFile();
+            if (pathPattern && match(source.fileName, pathPattern)) {
+                return true;
+            }
+            if (namePattern && match(node.getText(), namePattern)) {
+                return true;
+            }
+            if (lineNumber && source.getLineAndCharacterOfPosition(node.getStart()).line + 1 === lineNumber) {
+                return true;
+            }
+            return false;
+        };
+    }
+}
+
+function createFilter(): NodeFilter {
+    let defaultExcludes = ['**/test/**', '**.test.ts', '**/*.d.ts'];
+    let exclude = ~process.argv.indexOf('--ignoreCheck')
+    if (exclude) {
+        let excludeFile = ts.sys.readFile(process.argv[~exclude + 1]);
+        defaultExcludes = excludeFile.split('\n').filter(s => Boolean(s));
+    }
+    const all = defaultExcludes.map(createMatcher);
+    return node => {
+        for (const match of all) {
+            if (match(node)) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+interface NodeFilter {
+    (node: ts.Node): boolean;
+}
+
 const host = new class implements ts.LanguageServiceHost {
 
     private _host: ts.CompilerHost;
@@ -63,41 +116,34 @@ const host = new class implements ts.LanguageServiceHost {
 }
 
 function isReferenced(service: ts.LanguageService, node: ts.Node): boolean {
-    const refsPerDef = service.findReferences(node.getSourceFile().fileName, node.getStart());
-    if (!refsPerDef || refsPerDef.length === 0) {
-        return false;
-    }
-    for (const refs of refsPerDef) {
-        for (const reference of refs.references) {
-            if (!reference.isDefinition && !match(reference.fileName, '{**/test/**,**.test.ts}')) {
-                // true reference, not itself, not inside a test
-                return true;
+    const source = node.getSourceFile();
+    const fileName = source.fileName;
+    const span = { start: node.parent.getStart(), end: node.parent.getEnd() };
+    for (const { definition, references } of service.findReferences(fileName, node.getStart())) {
+
+        for (const reference of references) {
+            if (reference.isDefinition) {
+                // ignore definition
+                continue;
             }
+            if (match(reference.fileName, '{**/test/**,**.test.ts}')) {
+                // ignore test-files
+                continue;
+            }
+            if (definition.kind === ts.ScriptElementKind.classElement
+                && reference.fileName === fileName
+                && reference.textSpan.start >= span.start && reference.textSpan.start + reference.textSpan.length < span.end
+            ) {
+                // ignore references from within
+                continue;
+            }
+            return true;
         }
     }
     return false;
 }
 
-function acceptFile(file: ts.SourceFile): boolean {
-    return !match(file.fileName, '{**/test/**,**.test.ts,**/*.d.ts,**/extHost*.ts,**/mainThread*.ts}');
-}
-
-function acceptName(node: ts.Node): boolean {
-    const text = node.getText();
-    if (text === 'toString' || text === 'dispose' || text === 'toJSON') {
-        // ignore built-in symbols
-        return false;
-    } else if (text.startsWith('_') && text.endsWith('Brand')) {
-        // ignore the brand pattern
-        return false;
-    } else if (text.startsWith('$') && (node.getSourceFile().fileName.startsWith('extHost') || node.getSourceFile().fileName.startsWith('mainThread'))) {
-        // ignore IPC-methods
-        return false;
-    }
-    return true;
-}
-
-function collectTargets(node: ts.Node, bucket: Set<ts.Node>): void {
+function collectTargets(node: ts.Node, filter: NodeFilter, bucket: Set<ts.Node>): void {
     ts.forEachChild(node, child => {
 
         if (!node.modifiers || !node.modifiers.some(value => value.kind === ts.SyntaxKind.PrivateKeyword)) {
@@ -116,12 +162,12 @@ function collectTargets(node: ts.Node, bucket: Set<ts.Node>): void {
                     break;
             }
 
-            if (ident && acceptName(ident)) {
+            if (ident && filter(ident)) {
                 bucket.add(ident);
             }
         }
 
-        collectTargets(child, bucket);
+        collectTargets(child, filter, bucket);
     });
 }
 
@@ -141,23 +187,21 @@ class UnusedSymbolRecord {
     }
 
     toString(): string {
-        return `${this.fileName} -> ${this.symbolName}:${1 + this.start.line},${1 + this.start.character}, potentially save ~${this.span} lines`;
+        return `${this.fileName}|${this.symbolName}:${1 + this.start.line} -> potentially save ~${this.span} lines`;
     }
 }
 
+
+const filter = createFilter();
 const service = ts.createLanguageService(host);
 const unused: UnusedSymbolRecord[] = [];
 let totalLines = 0;
-let fileCounter = 0;
 
 for (const file of service.getProgram().getSourceFiles()) {
-    if (!acceptFile(file)) {
-        continue;
-    }
 
     let fileLines = 0;
     let targets = new Set<ts.Node>();
-    collectTargets(file, targets);
+    collectTargets(file, filter, targets);
 
     for (const target of targets) {
         if (!isReferenced(service, target)) {
@@ -170,11 +214,12 @@ for (const file of service.getProgram().getSourceFiles()) {
         }
     }
 
-    fileCounter += 1;
-    totalLines += fileLines;
-    console.error(`${file.fileName}, ${fileCounter}, ${totalLines} (+${fileLines})`);
+    if (fileLines > 0) {
+        totalLines += fileLines;
+        console.error(`${file.fileName} -> potentially save ${fileLines} lines`);
+    }
 }
 
-console.log(`DONE with ${fileCounter} source files. Found ${unused.length} unused symbols with potential for saving ${totalLines} lines of unused code`);
-console.log(unused.sort(UnusedSymbolRecord.compareBySpan).reverse().join('\n'));
+console.log(`Found ${unused.length} unused symbols with potential for saving ${totalLines} lines of unused code`);
+console.log(unused.join('\n'));
 
