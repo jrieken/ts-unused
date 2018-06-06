@@ -19,14 +19,14 @@ function createMatcher(raw: string): NodeFilter {
         let lineNumber = Number(raw.substring(colon + 1)) || undefined;
 
         return node => {
-            const source = node.getSourceFile();
-            if (pathPattern && match(source.fileName, pathPattern)) {
+            const src = node.getSourceFile();
+            if (pathPattern && match(src.fileName, pathPattern)) {
                 return true;
             }
             if (namePattern && match(node.getText(), namePattern)) {
                 return true;
             }
-            if (lineNumber && source.getLineAndCharacterOfPosition(node.getStart()).line + 1 === lineNumber) {
+            if (lineNumber && src.getLineAndCharacterOfPosition(node.getStart()).line + 1 === lineNumber) {
                 return true;
             }
             return false;
