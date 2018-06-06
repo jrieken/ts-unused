@@ -34,7 +34,7 @@ function createMatcher(raw: string): NodeFilter {
     }
 }
 
-function createFilter(): NodeFilter {
+function newFilter(): NodeFilter {
     let defaultExcludes = ['**/test/**', '**.test.ts', '**/*.d.ts'];
     let exclude = ~process.argv.indexOf('--ignoreCheck')
     if (exclude) {
@@ -192,7 +192,7 @@ class UnusedSymbolRecord {
 }
 
 
-const filter = createFilter();
+const filter = newFilter();
 const service = ts.createLanguageService(host);
 const unused: UnusedSymbolRecord[] = [];
 let totalLines = 0;
